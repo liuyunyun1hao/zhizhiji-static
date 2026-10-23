@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCP 连通性诊断</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #111; color: #eee; margin: 0; padding: 16px; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .sub { color: #888; font-size: 12px; margin-bottom: 14px; }
+  .card { background: #1b1b1b; border: 1px solid #2a2a2a; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  .name { font-weight: 600; margin-bottom: 6px; }
+  .ok { color: #4ade80; } .bad { color: #f87171; } .warn { color: #fbbf24; } .dim { color: #777; }
+  pre { background: #0a0a0a; padding: 8px; border-radius: 6px; overflow-x: auto; font-size: 11px; margin: 6px 0 0; white-space: pre-wrap; word-break: break-all; }
+  .row { display: flex; justify-content: space-between; gap: 10px; }
+  #summary { position: sticky; top: 0; background: #111; padding: 8px 0; z-index: 2; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>MCP 连通性诊断</h1>
+<div class="sub">在「织织机」同一个源（github.io）里跑，结果同时上报到本机代理日志。</div>
+<div id="summary" class="dim">准备中…</div>
+<div id="out"></div>
+
+<script>
+const PROXY = 'http://127.0.0.1:8899';
+const REPORT_URL = PROXY + '/diag-report';
+const TARGETS = [
+  { name: '心潮',   url: PROXY + '/xinchao/mcp', token: 'd8b566f10cc1bf4fbbaa1b506f548d5c120f62b433db3bb15d2d60ffb7162cd2' },
+  { name: 'OB',     url: PROXY + '/ob/mcp',      token: 'GtjkUB3Qupx0hXcSySIvVDnrA2muDLoBB7k8PCaK-cA' },
+  { name: 'Lover',  url: PROXY + '/lover/mcp',   token: '' },
+  { name: 'Nudge',  url: PROXY + '/nudge/',      token: '' },
+];
+const BASE_HEADERS = (token) => {
+  const h = { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' };
+  if (token) h['Authorization'] = 'Bearer ' + token;
+  return h;
+};
+
+const out = document.getElementById('out');
+const summary = document.getElementById('summary');
+const report = { ua: navigator.userAgent, at: new Date().toISOString(), steps: [], results: [] };
+
+function card(name) {
+  const d = document.createElement('div');
+  d.className = 'card';
+  d.innerHTML = `<div class="name">${name}</div><div class="body"></div><pre style="display:none"></pre>`;
+  out.appendChild(d);
+  return d;
+}
+function line(d, text, cls) {
+  const p = document.createElement('div');
+  p.className = cls || '';
+  p.textContent = text;
+  d.querySelector('.body').appendChild(p);
+}
+
+async function timed(label, fn, d) {
+  const t0 = performance.now();
+  try {
+    const v = await fn();
+    const ms = Math.round(performance.now() - t0);
+    line(d, `✓ ${label} ${ms}ms`, 'ok');
+    report.steps.push({ label, ms, ok: true });
+    return { ok: true, v, ms };
+  } catch (e) {
+    const ms = Math.round(performance.now() - t0);
+    const info = `${e.name}: ${e.message}`;
+    line(d, `✗ ${label} ${ms}ms — ${info}`, 'bad');
+    report.steps.push({ label, ms, ok: false, error: info });
+    return { ok: false, error: info, ms };
+  }
+}
+
+async function parseReply(res) {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const text = await res.text();
+  if (ct.includes('text/event-stream')) {
+    for (const ln of text.split('\n')) if (ln.startsWith('data:')) { try { return JSON.parse(ln.slice(5)); } catch {} }
+    return null;
+  }
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+async function run() {
+  // 0) 先看网络层通不通（no-cors，只判断能否建立连接）
+  const net = await timed('网络层 no-cors GET /health', async () => {
+    const r = await fetch(PROXY + '/health', { mode: 'no-cors', cache: 'no-store' });
+    return r.type;
+  }, out);
+  report.netType = net.ok ? net.v : net.error;
+  if (!net.ok) {
+    summary.textContent = '网络层就不通 —— 浏览器没把请求送到 127.0.0.1:8899';
+    summary.className = 'bad';
+    return;
+  }
+
+  for (const t of TARGETS) {
+    const d = card(t.name + ' — ' + t.url);
+    const r = { name: t.name, url: t.url, steps: [] };
+    const init = await timed('initialize', async () => {
+      const res = await fetch(t.url, {
+        method: 'POST',
+        headers: BASE_HEADERS(t.token),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'zhizhiji-diag', version: '1.0' } } }),
+      });
+      const sid = res.headers.get('mcp-session-id');
+      const j = await parseReply(res);
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + JSON.stringify(j).slice(0, 120));
+      return { sid, serverInfo: j && j.result && j.result.serverInfo, protocol: j && j.result && j.result.protocolVersion };
+    }, d);
+    r.init = init.ok ? init.v : init.error;
+    if (!init.ok) { r.ok = false; report.results.push(r); continue; }
+
+    const H = BASE_HEADERS(t.token);
+    if (init.v.sid) H['Mcp-Session-Id'] = init.v.sid;
+
+    await timed('notifications/initialized', async () => {
+      const res = await fetch(t.url, { method: 'POST', headers: H, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) });
+      return res.status;
+    }, d);
+
+    const tl = await timed('tools/list', async () => {
+      const res = await fetch(t.url, { method: 'POST', headers: H, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) });
+      const j = await parseReply(res);
+      if (!j || !j.result || !Array.isArray(j.result.tools)) throw new Error('HTTP ' + res.status + ' 无 tools');
+      return j.result.tools.length;
+    }, d);
+    r.tools = tl.ok ? tl.v : null;
+    r.ok = tl.ok;
+    if (init.v.serverInfo) line(d, `${init.v.serverInfo.name} v${init.v.serverInfo.version} · 协议 ${init.v.protocol}`, 'dim');
+    report.results.push(r);
+  }
+
+  const okCount = report.results.filter((x) => x.ok).length;
+  summary.textContent = `完成：${okCount} / ${TARGETS.length} 成功`;
+  summary.className = okCount === TARGETS.length ? 'ok' : 'bad';
+  report.summary = `${okCount}/${TARGETS.length}`;
+
+  try {
+    await fetch(REPORT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(report) });
+  } catch (e) { /* 上报失败也无所谓，页面里已显示 */ }
+}
+
+run().catch((e) => {
+  summary.textContent = '诊断脚本异常：' + e.message;
+  summary.className = 'bad';
+});
+</script>
+</body>
+</html>
