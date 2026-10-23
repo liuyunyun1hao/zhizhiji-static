@@ -83,7 +83,12 @@ async function parseReply(res) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
+function beacon(q) {
+  try { new Image().src = REPORT_URL + '?' + q + '&t=' + Date.now(); } catch (e) {}
+}
+
 async function run() {
+  beacon('beat=loaded');
   // 0) 先看网络层通不通（no-cors，只判断能否建立连接）
   const net = await timed('网络层 no-cors GET /health', async () => {
     const r = await fetch(PROXY + '/health', { mode: 'no-cors', cache: 'no-store' });
@@ -93,8 +98,10 @@ async function run() {
   if (!net.ok) {
     summary.textContent = '网络层就不通 —— 浏览器没把请求送到 127.0.0.1:8899';
     summary.className = 'bad';
+    beacon('beat=netfail&e=' + encodeURIComponent(String(net.error).slice(0, 120)));
     return;
   }
+  beacon('beat=netok');
 
   for (const t of TARGETS) {
     const d = card(t.name + ' — ' + t.url);
@@ -140,7 +147,9 @@ async function run() {
 
   try {
     await fetch(REPORT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(report) });
-  } catch (e) { /* 上报失败也无所谓，页面里已显示 */ }
+  } catch (e) {
+    beacon('beat=postfail&summary=' + encodeURIComponent(report.summary || '?'));
+  }
 }
 
 run().catch((e) => {
