@@ -19236,12 +19236,24 @@ html.pwa-ios-standalone .st-modal {
                         <div class="st-section-icon">
                             <svg class="st-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"></path></svg>
                         </div>
-                        <span class="st-title">MiniMax 语音</span>
+                        <span class="st-title">TTS 语音</span>
                     </div>
                     <svg class="st-icon st-chevron" id="chevron-minimax" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 8.25l-7.5 7.5-7.5-7.5"></path></svg>
                 </button>
          <div class="st-content" id="content-minimax">
     <div class="st-content-inner">
+        <div class="st-form-group">
+            <label class="st-label">语音服务（官方接口）</label>
+            <select id="tts-provider" class="st-input">
+                <option value="minimax">MiniMax 官方</option>
+                <option value="elevenlabs">ElevenLabs 官方</option>
+            </select>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-top:5px; line-height:1.5;">
+                两个官方接口二选一；切换后下方字段会跟着变，保存后立即生效。朗读缓存按引擎分开存，互不串音。
+            </div>
+        </div>
+
+        <div id="tts-fields-minimax">
         <div class="st-form-group">
             <label class="st-label">API Key</label>
             <input type="password" id="mm-api-key" class="st-input" placeholder="eyJhbG... (MiniMax API Key)">
@@ -19307,7 +19319,41 @@ html.pwa-ios-standalone .st-modal {
             </div>
         </div>
 
-        <div class="st-grid-2" style="margin-top: 20px;">
+                </div><!-- /tts-fields-minimax -->
+
+        <div id="tts-fields-elevenlabs" style="display:none;">
+            <div class="st-form-group">
+                <label class="st-label">API Key</label>
+                <input type="password" id="el-api-key" class="st-input" placeholder="sk_... (ElevenLabs API Key)">
+                <div style="font-size:11px; color:var(--text-tertiary); margin-top:5px; line-height:1.5;">
+                    只要有 text-to-speech 权限就能朗读；想拉音色列表再额外勾 Voices → Read。
+                </div>
+            </div>
+
+            <div class="st-form-group">
+                <label class="st-label">Voice ID (音色)</label>
+                <div class="st-select-group">
+                    <input type="text" id="el-voice-id" class="st-input" placeholder="例如: 21m00Tcm4TlvDq8ikWAM">
+                    <button class="st-btn st-btn-secondary" id="btn-test-elevenlabs">试听</button>
+                </div>
+                <div style="font-size:11px; color:var(--text-tertiary); margin-top:5px; line-height:1.5;">
+                    在 ElevenLabs 后台 Voices 页面复制 ID；默认 21m00Tcm4TlvDq8ikWAM（Rachel）。
+                </div>
+            </div>
+
+            <div class="st-form-group">
+                <label class="st-label">语音模型</label>
+                <select id="el-model" class="st-input">
+                    <option value="eleven_v4">Eleven v4（推荐）</option>
+                    <option value="eleven_v3">Eleven v3（情感最强）</option>
+                    <option value="eleven_turbo_v2_5">Turbo v2.5（更快省钱）</option>
+                    <option value="eleven_multilingual_v2">Multilingual v2（最稳）</option>
+                    <option value="eleven_flash_v2_5">Flash v2.5（最省）</option>
+                </select>
+            </div>
+        </div>
+
+<div class="st-grid-2" style="margin-top: 20px;">
             <button class="st-btn st-btn-primary" style="width: 100%; grid-column: span 2;" id="btn-save-minimax">
                 <span>保存配置</span>
             </button>
@@ -49878,6 +49924,16 @@ const MiniMaxService = {
     _inflight: new Map(),
     cacheLimit: 200,
 
+    ELEVEN_MODELS: ['eleven_v4', 'eleven_v3', 'eleven_turbo_v2_5', 'eleven_multilingual_v2', 'eleven_flash_v2_5'],
+
+    applyProviderVisibility(provider) {
+        const isEleven = provider === 'elevenlabs';
+        const mm = document.getElementById('tts-fields-minimax');
+        const el = document.getElementById('tts-fields-elevenlabs');
+        if (mm) mm.style.display = isEleven ? 'none' : '';
+        if (el) el.style.display = isEleven ? '' : 'none';
+    },
+
     normalizeConfig(config = {}) {
         const allowedModels = new Set([
             'speech-2.8-hd', 'speech-2.8-turbo',
@@ -49896,7 +49952,11 @@ const MiniMaxService = {
             voiceId: String(config.voiceId || '').trim(),
             model: allowedModels.has(config.model) ? config.model : 'speech-2.8-hd',
             emotion: allowedEmotions.has(config.emotion) ? config.emotion : 'auto',
-            apiHost: this.resolveApiHost(config.apiHost)
+            apiHost: this.resolveApiHost(config.apiHost),
+            provider: config.provider === 'elevenlabs' ? 'elevenlabs' : 'minimax',
+            elApiKey: String(config.elApiKey || '').trim(),
+            elVoiceId: String(config.elVoiceId || '').trim(),
+            elModel: this.ELEVEN_MODELS.includes(config.elModel) ? config.elModel : 'eleven_v4'
         };
     },
 
@@ -49908,7 +49968,7 @@ const MiniMaxService = {
     async saveConfig(config, { silent = false } = {}) {
         const normalized = this.normalizeConfig(config);
         await Database.saveSetting('minimax_config', normalized);
-        if (!silent) UI.toast("MiniMax 配置已保存");
+        if (!silent) UI.toast("TTS 配置已保存");
         return normalized;
     },
 
@@ -50145,6 +50205,10 @@ const MiniMaxService = {
     },
 
     async requestAudioBlob(text, voiceId, config, cacheKey, messageId = null, speechOptions = {}) {
+        if ((config.provider || 'minimax') === 'elevenlabs') {
+            return this.requestElevenLabsBlob(text, voiceId, config, cacheKey, messageId, speechOptions);
+        }
+
         if (!speechOptions.forceRegenerate) {
             const existing = await this.readCache(cacheKey);
             if (existing) return { blob: existing, fromCache: true };
@@ -50211,6 +50275,75 @@ const MiniMaxService = {
             const audioFormat = String(resJson?.extra_info?.audio_format || speechOptions.format || 'mp3').toLowerCase();
             const mimeTypes = { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', pcm: 'audio/L16' };
             const blob = new Blob([this.hexToBytes(hexAudio)], { type: mimeTypes[audioFormat] || 'audio/mpeg' });
+            await this.writeCache(cacheKey, blob, messageId);
+            return blob;
+        })();
+
+        this._inflight.set(cacheKey, requestPromise);
+        try {
+            const blob = await requestPromise;
+            return blob ? { blob, fromCache: false } : null;
+        } finally {
+            this._inflight.delete(cacheKey);
+        }
+    },
+
+    async requestElevenLabsBlob(text, voiceId, config, cacheKey, messageId = null, speechOptions = {}) {
+        if (!speechOptions.forceRegenerate) {
+            const existing = await this.readCache(cacheKey);
+            if (existing) return { blob: existing, fromCache: true };
+        }
+
+        if (!config.elApiKey) {
+            console.log('ElevenLabs 配置缺失且无可用缓存，静默跳过');
+            return null;
+        }
+
+        if (this._inflight.has(cacheKey)) {
+            const blob = await this._inflight.get(cacheKey);
+            return blob ? { blob, fromCache: false } : null;
+        }
+
+        const requestPromise = (async () => {
+            UI.toast('正在生成语音...', 'fa-circle-notch fa-spin');
+            const modelId = config.elModel || 'eleven_v4';
+            const url = 'https://api.elevenlabs.io/v1/text-to-speech/'
+                + encodeURIComponent(voiceId)
+                + '?output_format=mp3_44100_128';
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'xi-api-key': config.elApiKey,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    text,
+                    model_id: modelId,
+                    voice_settings: {
+                        stability: 0.45,
+                        similarity_boost: 0.8,
+                        style: 0.15,
+                        use_speaker_boost: true
+                    }
+                })
+            });
+
+            if (!response.ok) {
+                let detail = `HTTP ${response.status}`;
+                try {
+                    const err = await response.json();
+                    const raw = err?.detail?.message || err?.detail?.status || err?.detail || err?.message;
+                    if (raw) detail = typeof raw === 'string' ? raw : JSON.stringify(raw);
+                } catch (_) { /* 保持 HTTP 状态码文案 */ }
+                console.error('ElevenLabs API Error:', response.status, detail);
+                UI.alert('语音生成出错', `ElevenLabs: ${detail}`);
+                throw new Error(detail);
+            }
+
+            const blob = await response.blob();
+            if (!(blob instanceof Blob) || blob.size < 256) {
+                throw new Error('ElevenLabs 返回的音频过短，已拒绝播放');
+            }
             await this.writeCache(cacheKey, blob, messageId);
             return blob;
         })();
@@ -50312,20 +50445,40 @@ const MiniMaxService = {
 
             const inputApiHost = document.getElementById('mm-api-host');
             if (inputApiHost && inputApiHost.value) config.apiHost = inputApiHost.value;
+
+            const selProvider = document.getElementById('tts-provider');
+            if (selProvider && selProvider.value) config.provider = selProvider.value;
+
+            const inputElKey = document.getElementById('el-api-key');
+            if (inputElKey && inputElKey.value) config.elApiKey = inputElKey.value.trim();
+
+            const inputElVoice = document.getElementById('el-voice-id');
+            if (inputElVoice && inputElVoice.value) config.elVoiceId = inputElVoice.value.trim();
+
+            const inputElModel = document.getElementById('el-model');
+            if (inputElModel && inputElModel.value) config.elModel = inputElModel.value;
         }
 
+        const isEleven = (config.provider || 'minimax') === 'elevenlabs';
         let voiceId = forceVoiceId;
         if (!voiceId) {
-            const inputVoice = document.getElementById('mm-voice-id');
-            voiceId = useSettingsDraft && inputVoice?.value.trim()
-                ? inputVoice.value.trim()
-                : config.voiceId;
+            if (isEleven) {
+                const elInput = document.getElementById('el-voice-id');
+                voiceId = useSettingsDraft && elInput?.value.trim()
+                    ? elInput.value.trim()
+                    : config.elVoiceId;
+            } else {
+                const inputVoice = document.getElementById('mm-voice-id');
+                voiceId = useSettingsDraft && inputVoice?.value.trim()
+                    ? inputVoice.value.trim()
+                    : config.voiceId;
+            }
         }
 
         // 【修改点 3】如果没有音色 ID，直接结束，不显示 Toast
         if (!voiceId) {
             this.releasePlaybackTarget(playbackTarget);
-            console.log("MiniMax 未配置音色，静默跳过");
+            console.log(`${isEleven ? 'ElevenLabs' : 'MiniMax'} 未配置音色，静默跳过`);
             return null;
         }
 
@@ -50334,24 +50487,46 @@ const MiniMaxService = {
             this.releasePlaybackTarget(playbackTarget);
             return null;
         }
-        const model = config.model || 'speech-2.8-hd';
-        const preparedText = this.prepareSpeechText(cleanText, model);
+        const model = isEleven
+            ? (config.elModel || 'eleven_v4')
+            : (config.model || 'speech-2.8-hd');
+        // ElevenLabs 不吃 MiniMax 的停顿/情绪标记，直接送原文（方括号标签它会当语气标签用）。
+        const preparedText = isEleven
+            ? cleanText.slice(0, 5000)
+            : this.prepareSpeechText(cleanText, model);
         if (!preparedText) {
             this.releasePlaybackTarget(playbackTarget);
             return null;
         }
-        const speechOptions = {
-            model,
-            emotion: this.resolveEmotion(cleanText, config.emotion || 'auto', model),
-            languageBoost: 'auto',
-            speed: 1,
-            volume: 1,
-            pitch: 0,
-            sampleRate: 44100,
-            bitrate: 256000,
-            format: 'mp3'
-        };
-        const cacheKey = await this.buildCacheKey(preparedText, voiceId, speechOptions);
+        const speechOptions = isEleven
+            ? {
+                model,
+                emotion: '',
+                languageBoost: '',
+                speed: 1,
+                volume: 1,
+                pitch: 0,
+                sampleRate: 44100,
+                bitrate: 128000,
+                format: 'mp3'
+            }
+            : {
+                model,
+                emotion: this.resolveEmotion(cleanText, config.emotion || 'auto', model),
+                languageBoost: 'auto',
+                speed: 1,
+                volume: 1,
+                pitch: 0,
+                sampleRate: 44100,
+                bitrate: 256000,
+                format: 'mp3'
+            };
+        // 缓存键带上引擎前缀，避免 MiniMax 与 ElevenLabs 的同名音色串音。
+        const cacheKey = await this.buildCacheKey(
+            preparedText,
+            (isEleven ? 'el:' : 'mm:') + voiceId,
+            speechOptions
+        );
         this.stop();
         const playToken = this._playToken;
 
@@ -50395,9 +50570,16 @@ const MiniMaxService = {
     async testSpeech() {
         const text = "你好，我是织织。今天见到你，我真的很开心！\n你听，停顿和情绪现在应该更自然了。";
         // 测试时，如果没有音色，应该提示用户去填，所以这里不需要静默
-        const voiceId = document.getElementById('mm-voice-id').value.trim();
+        const isEleven = (document.getElementById('tts-provider')?.value || 'minimax') === 'elevenlabs';
+        const voiceId = (isEleven
+            ? document.getElementById('el-voice-id')?.value.trim()
+            : document.getElementById('mm-voice-id')?.value.trim()) || '';
         if(!voiceId) {
-            UI.toast('请先填写音色 ID');
+            UI.toast(isEleven ? '请先填写 ElevenLabs 的音色 ID' : '请先填写音色 ID');
+            return;
+        }
+        if (isEleven && !(document.getElementById('el-api-key')?.value.trim())) {
+            UI.toast('请先填写 ElevenLabs 的 API Key');
             return;
         }
         await this.speak(text, null, { userInitiated: true, useSettingsDraft: true });
@@ -65654,6 +65836,11 @@ const SettingsManager = {
         setVal('mm-model', mmConfig.model || 'speech-2.8-hd');
         setVal('mm-emotion', mmConfig.emotion || 'auto');
         setVal('mm-api-host', mmConfig.apiHost || 'https://api.minimaxi.com');
+        setVal('tts-provider', mmConfig.provider || 'minimax');
+        setVal('el-api-key', mmConfig.elApiKey);
+        setVal('el-voice-id', mmConfig.elVoiceId);
+        setVal('el-model', mmConfig.elModel || 'eleven_v4');
+        if (window.MiniMaxService) MiniMaxService.applyProviderVisibility(mmConfig.provider || 'minimax');
         // ==============================
 
         // 网易云账号与歌单状态回显
@@ -65849,12 +66036,16 @@ const SettingsManager = {
         if (saveMmBtn) {
             saveMmBtn.addEventListener('click', async () => {
                 const config = {
+                    provider: document.getElementById('tts-provider').value,
                     apiKey: document.getElementById('mm-api-key').value.trim(),
                     groupId: document.getElementById('mm-group-id').value.trim(),
                     voiceId: document.getElementById('mm-voice-id').value.trim(),
                     model: document.getElementById('mm-model').value,
                     emotion: document.getElementById('mm-emotion').value,
-                    apiHost: document.getElementById('mm-api-host').value
+                    apiHost: document.getElementById('mm-api-host').value,
+                    elApiKey: document.getElementById('el-api-key').value.trim(),
+                    elVoiceId: document.getElementById('el-voice-id').value.trim(),
+                    elModel: document.getElementById('el-model').value
                 };
                 if (window.MiniMaxService) {
                     await MiniMaxService.saveConfig(config);
@@ -65872,6 +66063,21 @@ const SettingsManager = {
         on('mm-model', 'change', (event) => persistMiniMaxChoice('model', event.target.value));
         on('mm-emotion', 'change', (event) => persistMiniMaxChoice('emotion', event.target.value));
         on('mm-api-host', 'change', (event) => persistMiniMaxChoice('apiHost', event.target.value));
+        on('el-model', 'change', (event) => persistMiniMaxChoice('elModel', event.target.value));
+        on('tts-provider', 'change', async (event) => {
+            const value = event.target.value;
+            if (window.MiniMaxService) {
+                MiniMaxService.applyProviderVisibility(value);
+                const current = await MiniMaxService.getConfig();
+                await MiniMaxService.saveConfig({ ...current, provider: value }, { silent: true });
+            }
+        });
+        const testElBtn = document.getElementById('btn-test-elevenlabs');
+        if (testElBtn) {
+            testElBtn.addEventListener('click', () => {
+                if (window.MiniMaxService) MiniMaxService.testSpeech();
+            });
+        }
         // === [新增] 绘图模型刷新按钮绑定 ===
         on('btn-refresh-img-models', 'click', () => this.refreshImageModels());
         on('img-gen-provider', 'change', (e) => this.toggleImageProviderFields(e.target.value));
